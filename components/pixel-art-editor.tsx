@@ -17,6 +17,11 @@ import {
   Pipette,
   ZoomIn,
   ZoomOut,
+  Hand,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -39,7 +44,7 @@ interface Layer {
   grid: PixelGrid
 }
 
-type Tool = "pencil" | "eraser" | "bucket" | "picker"
+type Tool = "pencil" | "eraser" | "bucket" | "picker" | "hand"
 
 interface HistoryState {
   layers: Layer[]
@@ -117,12 +122,16 @@ export default function PixelArtEditor() {
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [showGridLines, setShowGridLines] = useState(true)
   const [zoom, setZoom] = useState(1)
+  const [isPanning, setIsPanning] = useState(false)
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
 
   const colorCounts = getColorCounts(layers)
   const sortedColors = Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1])
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const panStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
 
   // Initialize history
   useEffect(() => {
@@ -239,6 +248,7 @@ export default function PixelArtEditor() {
   }
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
+    if (tool === "hand") return
     setIsDrawing(true)
     const coords = getCoordinates(e)
     if (coords) handleDraw(coords.x, coords.y, true)
@@ -255,6 +265,29 @@ export default function PixelArtEditor() {
       setIsDrawing(false)
       addToHistory(layers, gridSize)
     }
+  }
+
+  const handlePanStart = (e: React.MouseEvent) => {
+    if (tool !== "hand" || !containerRef.current) return
+    e.preventDefault()
+    setIsPanning(true)
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: containerRef.current.scrollLeft,
+      scrollTop: containerRef.current.scrollTop,
+    }
+  }
+
+  const handlePanMove = (e: React.MouseEvent) => {
+    if (!isPanning || !containerRef.current) return
+    const { x, y, scrollLeft, scrollTop } = panStartRef.current
+    containerRef.current.scrollLeft = scrollLeft + (x - e.clientX)
+    containerRef.current.scrollTop = scrollTop + (y - e.clientY)
+  }
+
+  const handlePanEnd = () => {
+    setIsPanning(false)
   }
 
   // --- Layer Management ---
@@ -399,18 +432,44 @@ export default function PixelArtEditor() {
 
   return (
     <div className="flex h-screen w-full bg-[#0f1115] text-[#a1a1aa] font-sans selection:bg-orange-500/30">
-      {/* Left Sidebar - Layers & Info */}
-      <div className="w-80 flex flex-col border-r border-white/5 p-4 gap-6 bg-[#13151a]">
-        {/* Header */}
-        <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-900/20">
-            <Grid3X3 className="text-white w-6 h-6" />
+      {/* Left Sidebar - Layers & Info (collapsible) */}
+      {!leftSidebarOpen && (
+        <button
+          type="button"
+          onClick={() => setLeftSidebarOpen(true)}
+          className="fixed left-0 top-1/2 z-30 -translate-y-1/2 flex items-center justify-center w-8 h-14 rounded-r-lg bg-[#13151a] border border-l-0 border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shadow-lg"
+          title="Open Layers panel"
+        >
+          <PanelLeftOpen size={18} />
+        </button>
+      )}
+      <div
+        className={cn(
+          "flex flex-col h-full border-r border-white/5 bg-[#13151a] transition-[width] duration-200 ease-out overflow-hidden shrink-0",
+          leftSidebarOpen ? "w-80" : "w-0",
+        )}
+      >
+        <div className="w-80 h-full flex flex-col p-4 gap-6 min-h-0">
+          {/* Header */}
+          <div className="shrink-0 flex items-center justify-between gap-3 px-2">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-900/20 shrink-0">
+                <Grid3X3 className="text-white w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-white font-semibold text-lg tracking-tight truncate">Pixel Studio</h1>
+                <p className="text-xs text-zinc-500">Untitled Project</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLeftSidebarOpen(false)}
+              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+              title="Collapse Layers panel"
+            >
+              <PanelLeftClose size={18} />
+            </button>
           </div>
-          <div>
-            <h1 className="text-white font-semibold text-lg tracking-tight">Pixel Studio</h1>
-            <p className="text-xs text-zinc-500">Untitled Project</p>
-          </div>
-        </div>
 
         {/* Layers Panel */}
         <div className="flex-1 flex flex-col bg-[#1c1e24] rounded-2xl overflow-hidden border border-white/5 shadow-xl">
@@ -523,6 +582,7 @@ export default function PixelArtEditor() {
             )}
           </div>
         </div>
+        </div>
       </div>
 
       {/* Main Canvas Area */}
@@ -609,11 +669,18 @@ export default function PixelArtEditor() {
         {/* Canvas Container */}
         <div
           ref={containerRef}
-          className="flex-1 overflow-auto relative"
+          className={cn(
+            "flex-1 overflow-auto relative",
+            tool === "hand" && (isPanning ? "cursor-grabbing" : "cursor-grab"),
+          )}
           style={{
             backgroundImage: "radial-gradient(#27272a 1px, transparent 1px)",
             backgroundSize: "24px 24px",
           }}
+          onMouseDown={handlePanStart}
+          onMouseMove={handlePanMove}
+          onMouseUp={handlePanEnd}
+          onMouseLeave={handlePanEnd}
         >
           <div className="min-w-full min-h-full flex items-center justify-center p-16">
             <div
@@ -639,7 +706,10 @@ export default function PixelArtEditor() {
                 ref={canvasRef}
                 width={gridSize * 20} // Internal resolution
                 height={gridSize * 20}
-                className="absolute inset-0 w-full h-full z-10 cursor-crosshair touch-none image-pixelated rounded-sm border border-white/10"
+                className={cn(
+                  "absolute inset-0 w-full h-full z-10 touch-none image-pixelated rounded-sm border border-white/10",
+                  tool === "hand" ? "cursor-grab" : "cursor-crosshair",
+                )}
                 onMouseDown={handlePointerDown}
                 onMouseMove={handlePointerMove}
                 onMouseUp={handlePointerUp}
@@ -655,6 +725,7 @@ export default function PixelArtEditor() {
           {/* Floating Toolbar */}
           <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-[#1c1e24]/90 backdrop-blur-md p-2 rounded-2xl border border-white/10 shadow-2xl z-50">
             {[
+              { id: "hand", icon: Hand, label: "Hand" },
               { id: "pencil", icon: Pencil, label: "Pencil" },
               { id: "eraser", icon: Eraser, label: "Eraser" },
               { id: "bucket", icon: PaintBucket, label: "Fill" },
@@ -710,11 +781,37 @@ export default function PixelArtEditor() {
         </div>
       </div>
 
-      {/* Right Sidebar - Properties */}
-      <div className="w-72 bg-[#13151a] border-l border-white/5 flex flex-col">
-        <div className="p-6 border-b border-white/5">
-          <h2 className="text-white font-medium mb-1">Properties</h2>
-          <p className="text-xs text-zinc-500">Adjust tool settings</p>
+      {/* Right Sidebar - Properties (collapsible) */}
+      {!rightSidebarOpen && (
+        <button
+          type="button"
+          onClick={() => setRightSidebarOpen(true)}
+          className="fixed right-0 top-1/2 z-30 -translate-y-1/2 flex items-center justify-center w-8 h-14 rounded-l-lg bg-[#13151a] border border-r-0 border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shadow-lg"
+          title="Open Properties panel"
+        >
+          <PanelRightOpen size={18} />
+        </button>
+      )}
+      <div
+        className={cn(
+          "flex flex-col border-l border-white/5 bg-[#13151a] transition-[width] duration-200 ease-out overflow-hidden shrink-0",
+          rightSidebarOpen ? "w-72" : "w-0",
+        )}
+      >
+        <div className="w-72 flex flex-col min-h-0 min-w-[18rem]">
+        <div className="p-6 border-b border-white/5 flex items-center justify-between">
+          <div>
+            <h2 className="text-white font-medium mb-1">Properties</h2>
+            <p className="text-xs text-zinc-500">Adjust tool settings</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRightSidebarOpen(false)}
+            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+            title="Collapse Properties panel"
+          >
+            <PanelRightClose size={18} />
+          </button>
         </div>
 
         <div className="p-6 space-y-8">
@@ -757,6 +854,7 @@ export default function PixelArtEditor() {
                   {tool === "eraser" && <Eraser size={18} />}
                   {tool === "bucket" && <PaintBucket size={18} />}
                   {tool === "picker" && <Pipette size={18} />}
+                  {tool === "hand" && <Hand size={18} />}
                 </div>
                 <div>
                   <div className="text-sm font-medium text-white capitalize">{tool}</div>
@@ -765,6 +863,7 @@ export default function PixelArtEditor() {
                     {tool === "eraser" && "Click and drag to remove pixels"}
                     {tool === "bucket" && "Fill connected area with color"}
                     {tool === "picker" && "Pick color from canvas"}
+                    {tool === "hand" && "Click and drag to pan the canvas"}
                   </div>
                 </div>
               </div>
@@ -791,6 +890,7 @@ export default function PixelArtEditor() {
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>
