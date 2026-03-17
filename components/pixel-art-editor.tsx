@@ -22,6 +22,9 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  ChevronUp,
+  ChevronDown,
+  SquarePen,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -125,6 +128,11 @@ export default function PixelArtEditor() {
   const [isPanning, setIsPanning] = useState(false)
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState("")
+  const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null)
+  const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null)
+  const [floatingToolbarOpen, setFloatingToolbarOpen] = useState(true)
 
   const colorCounts = getColorCounts(layers)
   const sortedColors = Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1])
@@ -328,6 +336,56 @@ export default function PixelArtEditor() {
     // Don't add to history on every slide event, maybe debounce or onMouseUp
   }
 
+  const renameLayer = (id: string, newName: string) => {
+    const trimmed = newName.trim()
+    if (!trimmed) return
+    const newLayers = layers.map((l) => (l.id === id ? { ...l, name: trimmed } : l))
+    setLayers(newLayers)
+    setEditingLayerId(null)
+    addToHistory(newLayers, gridSize)
+  }
+
+  const moveLayerUp = (id: string) => {
+    const index = layers.findIndex((l) => l.id === id)
+    if (index < 0 || index >= layers.length - 1) return
+    const newLayers = [...layers]
+    ;[newLayers[index], newLayers[index + 1]] = [newLayers[index + 1], newLayers[index]]
+    setLayers(newLayers)
+    addToHistory(newLayers, gridSize)
+  }
+
+  const moveLayerDown = (id: string) => {
+    const index = layers.findIndex((l) => l.id === id)
+    if (index <= 0) return
+    const newLayers = [...layers]
+    ;[newLayers[index - 1], newLayers[index]] = [newLayers[index], newLayers[index - 1]]
+    setLayers(newLayers)
+    addToHistory(newLayers, gridSize)
+  }
+
+  const moveLayerTo = (dragId: string, targetId: string) => {
+    if (dragId === targetId) return
+    // Work in rendered order (top-down), then convert back to internal order (bottom-up)
+    const rendered = [...layers].reverse()
+    const fromIndex = rendered.findIndex((l) => l.id === dragId)
+    const toIndex = rendered.findIndex((l) => l.id === targetId)
+    if (fromIndex === -1 || toIndex === -1) return
+
+    const newRendered = [...rendered]
+    const [moved] = newRendered.splice(fromIndex, 1)
+    const insertIndex = toIndex
+    newRendered.splice(insertIndex, 0, moved)
+
+    const newLayers = newRendered.reverse()
+    setLayers(newLayers)
+    addToHistory(newLayers, gridSize)
+  }
+
+  const startEditingLayerName = (layer: Layer) => {
+    setEditingLayerId(layer.id)
+    setEditingName(layer.name)
+  }
+
   const changeGridSize = (size: number) => {
     if (size === gridSize) return
     // Create new grids with new size, preserving data if possible (top-left aligned)
@@ -431,7 +489,7 @@ export default function PixelArtEditor() {
   }, [layers, gridSize, showGridLines])
 
   return (
-    <div className="flex h-screen w-full bg-[#0f1115] text-[#a1a1aa] font-sans selection:bg-orange-500/30">
+    <div className="pixel-art-editor flex h-screen w-full bg-[#0f1115] text-[#a1a1aa] font-sans selection:bg-orange-500/30">
       {/* Left Sidebar - Layers & Info (collapsible) */}
       {!leftSidebarOpen && (
         <button
@@ -487,45 +545,140 @@ export default function PixelArtEditor() {
             {layers
               .slice()
               .reverse()
-              .map((layer) => (
+              .map((layer) => {
+                const layerIndex = layers.findIndex((l) => l.id === layer.id)
+                const canMoveUp = layerIndex < layers.length - 1
+                const canMoveDown = layerIndex > 0
+                const isEditing = editingLayerId === layer.id
+                return (
                 <div
                   key={layer.id}
-                  onClick={() => setActiveLayerId(layer.id)}
+                  onClick={() => !isEditing && setActiveLayerId(layer.id)}
                   className={cn(
                     "group flex flex-col gap-2 p-3 rounded-xl cursor-pointer transition-all border border-transparent",
                     activeLayerId === layer.id ? "bg-[#2a2d36] border-white/5 shadow-lg" : "hover:bg-white/5",
+                    draggingLayerId === layer.id && "opacity-60",
+                    dragOverLayerId === layer.id && draggingLayerId !== layer.id && "border-orange-500/40 bg-orange-500/5",
                   )}
+                  draggable={!isEditing}
+                  onDragStart={(e) => {
+                    if (isEditing) return
+                    setDraggingLayerId(layer.id)
+                    e.dataTransfer.effectAllowed = "move"
+                    e.dataTransfer.setData("text/plain", layer.id)
+                  }}
+                  onDragOver={(e) => {
+                    if (!draggingLayerId || draggingLayerId === layer.id) return
+                    e.preventDefault()
+                    setDragOverLayerId(layer.id)
+                    e.dataTransfer.dropEffect = "move"
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverLayerId === layer.id) setDragOverLayerId(null)
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    const dragId = draggingLayerId ?? e.dataTransfer.getData("text/plain")
+                    if (dragId) moveLayerTo(dragId, layer.id)
+                    setDraggingLayerId(null)
+                    setDragOverLayerId(null)
+                  }}
+                  onDragEnd={() => {
+                    setDraggingLayerId(null)
+                    setDragOverLayerId(null)
+                  }}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {layers.length > 1 && (
+                        <div className="flex flex-col shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); moveLayerUp(layer.id) }}
+                            disabled={!canMoveUp}
+                            className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                            title="Move layer up"
+                          >
+                            <ChevronUp size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); moveLayerDown(layer.id) }}
+                            disabled={!canMoveDown}
+                            className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                            title="Move layer down"
+                          >
+                            <ChevronDown size={14} />
+                          </button>
+                        </div>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
                           toggleLayerVisibility(layer.id)
                         }}
                         className={cn(
-                          "p-1 rounded-md transition-colors",
+                          "p-1 rounded-md transition-colors shrink-0",
                           layer.visible ? "text-zinc-400 hover:text-white" : "text-zinc-600",
                         )}
                       >
                         {layer.visible ? <Eye size={14} /> : <EyeOff size={14} />}
                       </button>
-                      <span
-                        className={cn(
-                          "text-sm font-medium",
-                          activeLayerId === layer.id ? "text-white" : "text-zinc-400",
-                        )}
-                      >
-                        {layer.name}
-                      </span>
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          onBlur={() => renameLayer(layer.id, editingName)}
+                          onKeyDown={(e) => {
+                            e.stopPropagation()
+                            if (e.key === "Enter") renameLayer(layer.id, editingName)
+                            if (e.key === "Escape") {
+                              setEditingLayerId(null)
+                              setEditingName(layer.name)
+                            }
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex-1 min-w-0 text-sm font-medium bg-white/10 text-white rounded px-2 py-0.5 border border-white/20 focus:outline-none focus:ring-1 focus:ring-orange-500"
+                          autoFocus
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1 min-w-0 flex-1">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => e.stopPropagation()}
+                            onDoubleClick={(e) => { e.stopPropagation(); startEditingLayerName(layer) }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startEditingLayerName(layer) } }}
+                            className={cn(
+                              "text-sm font-medium truncate flex-1 min-w-0 py-0.5 rounded px-1 -mx-1 hover:bg-white/5",
+                              activeLayerId === layer.id ? "text-white" : "text-zinc-400",
+                            )}
+                          >
+                            {layer.name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              startEditingLayerName(layer)
+                            }}
+                            className="p-1 rounded-md text-zinc-500 hover:text-white hover:bg-white/10 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Rename layer"
+                          >
+                            <SquarePen size={12} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                     {layers.length > 1 && (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation()
                           deleteLayer(layer.id)
                         }}
-                        className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-md transition-all"
+                        className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-md transition-all shrink-0"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -548,7 +701,7 @@ export default function PixelArtEditor() {
                     </div>
                   )}
                 </div>
-              ))}
+              ); })}
           </div>
         </div>
 
@@ -618,7 +771,7 @@ export default function PixelArtEditor() {
               </button>
             </div>
 
-            <div className="flex items-center gap-2 bg-[#1c1e24] px-3 py-1.5 rounded-lg border border-white/5">
+            <div className="flex items-center gap-2 bg-[#1c1e24] px-3 py-1 rounded-lg border border-white/5">
               <span className="text-xs font-medium text-zinc-400">Grid</span>
               <Select
                 value={String(gridSize)}
@@ -722,61 +875,83 @@ export default function PixelArtEditor() {
             </div>
           </div>
 
-          {/* Floating Toolbar */}
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-[#1c1e24]/90 backdrop-blur-md p-2 rounded-2xl border border-white/10 shadow-2xl z-50">
-            {[
-              { id: "hand", icon: Hand, label: "Hand" },
-              { id: "pencil", icon: Pencil, label: "Pencil" },
-              { id: "eraser", icon: Eraser, label: "Eraser" },
-              { id: "bucket", icon: PaintBucket, label: "Fill" },
-              { id: "picker", icon: Pipette, label: "Picker" },
-            ].map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTool(t.id as Tool)}
-                className={cn(
-                  "p-3 rounded-xl transition-all relative group",
-                  tool === t.id
-                    ? "bg-orange-500 text-white shadow-lg shadow-orange-900/20"
-                    : "text-zinc-400 hover:text-white hover:bg-white/5",
-                )}
-                title={t.label}
-              >
-                <t.icon size={20} />
-                {/* Tooltip */}
-                <span className="absolute -top-10 left-1/2 -translate-x-1/2 bg-black/80 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-                  {t.label}
-                </span>
-              </button>
-            ))}
+          {/* Floating Toolbar (collapsible) */}
+          <div
+            className={cn(
+              "fixed left-1/2 -translate-x-1/2 z-50 flex flex-col items-center transition-all duration-200 ease-out",
+              floatingToolbarOpen ? "bottom-8" : "bottom-0",
+            )}
+          >
+            {/* Toggle button - subtle, on top */}
+            <button
+              type="button"
+              onClick={() => setFloatingToolbarOpen((o) => !o)}
+              className={cn(
+                "flex items-center justify-center rounded-t-lg border border-b-0 border-white/10 transition-colors",
+                floatingToolbarOpen
+                  ? "w-10 h-5 bg-[#1c1e24]/80 text-zinc-500 hover:text-zinc-300 hover:bg-[#1c1e24]"
+                  : "w-14 h-8 bg-[#1c1e24]/40 text-zinc-600 hover:text-zinc-400 hover:bg-[#1c1e24]/60 shadow-lg opacity-80 hover:opacity-100",
+              )}
+              title={floatingToolbarOpen ? "Collapse toolbar" : "Expand toolbar"}
+            >
+              {floatingToolbarOpen ? <ChevronDown size={16} /> : <ChevronUp size={18} />}
+            </button>
 
-            <div className="w-px h-8 bg-white/10 mx-1" />
-
-            {/* Color Picker */}
-            <div className="flex items-center gap-2 px-2">
-              <div className="relative group rounded-full overflow-hidden border-2 border-white/20 shrink-0">
-                <input
-                  type="color"
-                  value={selectedColor}
-                  onChange={(e) => setSelectedColor(e.target.value)}
-                  className="w-8 h-8 rounded-full overflow-hidden cursor-pointer border-0 p-0 bg-transparent block [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-full [&::-moz-color-swatch]:border-none [&::-moz-color-swatch]:rounded-full"
-                />
-              </div>
-              <div className="grid grid-cols-4 gap-1">
-                {sortedColors.slice(0, 8).map(([color]) => (
+            {floatingToolbarOpen && (
+              <div className="flex items-center gap-2 bg-[#1c1e24]/90 backdrop-blur-md p-2 rounded-b-2xl rounded-t-lg border border-t-0 border-white/10 shadow-2xl -mt-px">
+                {[
+                  { id: "hand", icon: Hand, label: "Hand" },
+                  { id: "pencil", icon: Pencil, label: "Pencil" },
+                  { id: "eraser", icon: Eraser, label: "Eraser" },
+                  { id: "bucket", icon: PaintBucket, label: "Fill" },
+                  { id: "picker", icon: Pipette, label: "Picker" },
+                ].map((t) => (
                   <button
-                    key={color}
-                    type="button"
-                    onClick={() => setSelectedColor(color)}
+                    key={t.id}
+                    onClick={() => setTool(t.id as Tool)}
                     className={cn(
-                      "w-5 h-5 rounded-full border border-white/10 transition-transform hover:scale-110 shrink-0",
-                      selectedColor === color && "ring-2 ring-white ring-offset-1 ring-offset-[#1c1e24]",
+                      "p-3 rounded-xl transition-all relative group",
+                      tool === t.id
+                        ? "bg-orange-500 text-white shadow-lg shadow-orange-900/20"
+                        : "text-zinc-400 hover:text-white hover:bg-white/5",
                     )}
-                    style={{ backgroundColor: color }}
-                  />
+                    title={t.label}
+                  >
+                    <t.icon size={20} />
+                    <span className="absolute -top-10 left-1/2 -translate-x-1/2 bg-black/80 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+                      {t.label}
+                    </span>
+                  </button>
                 ))}
+
+                <div className="w-px h-8 bg-white/10 mx-1" />
+
+                <div className="flex items-center gap-2 px-2">
+                  <div className="relative group rounded-full overflow-hidden border-2 border-white/20 shrink-0">
+                    <input
+                      type="color"
+                      value={selectedColor}
+                      onChange={(e) => setSelectedColor(e.target.value)}
+                      className="w-8 h-8 rounded-full overflow-hidden cursor-pointer border-0 p-0 bg-transparent block [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-full [&::-moz-color-swatch]:border-none [&::-moz-color-swatch]:rounded-full"
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {sortedColors.slice(0, 8).map(([color]) => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setSelectedColor(color)}
+                        className={cn(
+                          "w-5 h-5 rounded-full border border-white/10 transition-transform hover:scale-110 shrink-0",
+                          selectedColor === color && "ring-2 ring-white ring-offset-1 ring-offset-[#1c1e24]",
+                        )}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

@@ -123,3 +123,62 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Pixel Art Editor – custom scrollbars */
+.pixel-art-editor {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(63 63 70) rgb(24 24 27);
+}
+
+.pixel-art-editor::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.pixel-art-editor::-webkit-scrollbar-track {
+  background: rgb(24 24 27);
+  border-radius: 5px;
+}
+
+.pixel-art-editor::-webkit-scrollbar-thumb {
+  background: rgb(63 63 70);
+  border-radius: 5px;
+  border: 2px solid rgb(24 24 27);
+}
+
+.pixel-art-editor::-webkit-scrollbar-thumb:hover {
+  background: rgb(82 82 91);
+}
+
+.pixel-art-editor::-webkit-scrollbar-thumb:active {
+  background: rgb(113 63 18);
+}
+
+.pixel-art-editor * {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(63 63 70) rgb(28 30 36);
+}
+
+.pixel-art-editor *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.pixel-art-editor *::-webkit-scrollbar-track {
+  background: rgb(28 30 36);
+  border-radius: 4px;
+}
+
+.pixel-art-editor *::-webkit-scrollbar-thumb {
+  background: rgb(63 63 70);
+  border-radius: 4px;
+  border: 2px solid rgb(28 30 36);
+}
+
+.pixel-art-editor *::-webkit-scrollbar-thumb:hover {
+  background: rgb(82 82 91);
+}
+
+.pixel-art-editor *::-webkit-scrollbar-thumb:active {
+  background: rgb(234 88 12 / 0.5);
+}
