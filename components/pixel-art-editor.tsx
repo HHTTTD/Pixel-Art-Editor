@@ -25,6 +25,9 @@ import {
   ChevronUp,
   ChevronDown,
   SquarePen,
+  GripVertical,
+  ImagePlus,
+  Move,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -133,6 +136,20 @@ export default function PixelArtEditor() {
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null)
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null)
   const [floatingToolbarOpen, setFloatingToolbarOpen] = useState(true)
+  const [referenceImageUrl, setReferenceImageUrl] = useState<string | null>(null)
+  const [referenceOpacity, setReferenceOpacity] = useState(45)
+  const [referenceVisible, setReferenceVisible] = useState(true)
+  const [referenceOffset, setReferenceOffset] = useState({ x: 0, y: 0 })
+  const [referenceAdjustMode, setReferenceAdjustMode] = useState(false)
+  const referenceMoveRef = useRef({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    ox: 0,
+    oy: 0,
+  })
+  const referenceFileInputRef = useRef<HTMLInputElement>(null)
+  const referenceUrlRef = useRef<string | null>(null)
 
   const colorCounts = getColorCounts(layers)
   const sortedColors = Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1])
@@ -140,6 +157,101 @@ export default function PixelArtEditor() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const panStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
+  const layerDragPreviewRef = useRef<HTMLElement | null>(null)
+
+  const clearLayerDragPreview = () => {
+    if (layerDragPreviewRef.current) {
+      layerDragPreviewRef.current.remove()
+      layerDragPreviewRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    referenceUrlRef.current = referenceImageUrl
+  }, [referenceImageUrl])
+
+  useEffect(() => {
+    if (!referenceVisible) setReferenceAdjustMode(false)
+  }, [referenceVisible])
+
+  useEffect(() => {
+    return () => {
+      if (referenceUrlRef.current) URL.revokeObjectURL(referenceUrlRef.current)
+    }
+  }, [])
+
+  const handleReferenceImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file || !file.type.startsWith("image/")) return
+    setReferenceImageUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      const next = URL.createObjectURL(file)
+      referenceUrlRef.current = next
+      return next
+    })
+    setReferenceVisible(true)
+    setReferenceOffset({ x: 0, y: 0 })
+    setReferenceAdjustMode(false)
+  }
+
+  const clearReferenceImage = () => {
+    setReferenceImageUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      referenceUrlRef.current = null
+      return null
+    })
+    setReferenceOffset({ x: 0, y: 0 })
+    setReferenceAdjustMode(false)
+  }
+
+  /** Offscreen copy of reference image for picker sampling */
+  const referencePixelCanvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    referencePixelCanvasRef.current = null
+    if (!referenceImageUrl) return
+    const img = new window.Image()
+    img.onload = () => {
+      const c = document.createElement("canvas")
+      c.width = img.naturalWidth
+      c.height = img.naturalHeight
+      const ctx = c.getContext("2d")
+      if (!ctx) return
+      ctx.drawImage(img, 0, 0)
+      referencePixelCanvasRef.current = c
+    }
+    img.onerror = () => {
+      referencePixelCanvasRef.current = null
+    }
+    img.src = referenceImageUrl
+  }, [referenceImageUrl])
+
+  const sampleColorFromReference = (clientX: number, clientY: number): string | null => {
+    const pixelCanvas = referencePixelCanvasRef.current
+    const canvasEl = canvasRef.current
+    if (!pixelCanvas || !canvasEl || pixelCanvas.width < 1) return null
+    const nw = pixelCanvas.width
+    const nh = pixelCanvas.height
+    const rect = canvasEl.getBoundingClientRect()
+    const cw = rect.width
+    const ch = rect.height
+    const s = Math.min(cw / nw, ch / nh)
+    const dispW = nw * s
+    const dispH = nh * s
+    const offX = (cw - dispW) / 2 + referenceOffset.x
+    const offY = (ch - dispH) / 2 + referenceOffset.y
+    const lx = clientX - rect.left
+    const ly = clientY - rect.top
+    if (lx < offX || lx >= offX + dispW || ly < offY || ly >= offY + dispH) return null
+    const ix = Math.min(nw - 1, Math.max(0, Math.floor((lx - offX) / s)))
+    const iy = Math.min(nh - 1, Math.max(0, Math.floor((ly - offY) / s)))
+    const ctx = pixelCanvas.getContext("2d")
+    if (!ctx) return null
+    const [r, g, b, a] = ctx.getImageData(ix, iy, 1, 1).data
+    if (a < 8) return null
+    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`
+  }
 
   // Initialize history
   useEffect(() => {
@@ -217,7 +329,13 @@ export default function PixelArtEditor() {
     setLayers(newLayers)
   }
 
-  const handleDraw = (x: number, y: number, isClick = false) => {
+  const handleDraw = (
+    x: number,
+    y: number,
+    isClick = false,
+    clientX?: number,
+    clientY?: number,
+  ) => {
     if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) return
 
     const layerIndex = layers.findIndex((l) => l.id === activeLayerId)
@@ -227,12 +345,23 @@ export default function PixelArtEditor() {
 
     // For picker tool
     if (tool === "picker") {
-      // Find the top-most visible color at this pixel
       for (let i = layers.length - 1; i >= 0; i--) {
         if (layers[i].visible && layers[i].grid[y][x]) {
           setSelectedColor(layers[i].grid[y][x])
           setTool("pencil")
           return
+        }
+      }
+      if (
+        clientX !== undefined &&
+        clientY !== undefined &&
+        referenceImageUrl &&
+        referencePixelCanvasRef.current
+      ) {
+        const refHex = sampleColorFromReference(clientX, clientY)
+        if (refHex) {
+          setSelectedColor(refHex)
+          setTool("pencil")
         }
       }
       return
@@ -255,17 +384,25 @@ export default function PixelArtEditor() {
     }
   }
 
+  const getClientXY = (e: React.MouseEvent | React.TouchEvent) => {
+    const clientX = "touches" in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX
+    const clientY = "touches" in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY
+    return { clientX, clientY }
+  }
+
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (tool === "hand") return
     setIsDrawing(true)
     const coords = getCoordinates(e)
-    if (coords) handleDraw(coords.x, coords.y, true)
+    const { clientX, clientY } = getClientXY(e)
+    if (coords) handleDraw(coords.x, coords.y, true, clientX, clientY)
   }
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing) return
     const coords = getCoordinates(e)
-    if (coords) handleDraw(coords.x, coords.y)
+    const { clientX, clientY } = getClientXY(e)
+    if (coords) handleDraw(coords.x, coords.y, false, clientX, clientY)
   }
 
   const handlePointerUp = () => {
@@ -296,6 +433,38 @@ export default function PixelArtEditor() {
 
   const handlePanEnd = () => {
     setIsPanning(false)
+  }
+
+  const handleReferenceMovePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    referenceMoveRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      ox: referenceOffset.x,
+      oy: referenceOffset.y,
+    }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }
+
+  const handleReferenceMovePointerMove = (e: React.PointerEvent) => {
+    if (!referenceMoveRef.current.dragging) return
+    const d = referenceMoveRef.current
+    setReferenceOffset({
+      x: d.ox + (e.clientX - d.startX),
+      y: d.oy + (e.clientY - d.startY),
+    })
+  }
+
+  const handleReferenceMovePointerUp = (e: React.PointerEvent) => {
+    if (!referenceMoveRef.current.dragging) return
+    referenceMoveRef.current.dragging = false
+    try {
+      ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
   }
 
   // --- Layer Management ---
@@ -410,12 +579,11 @@ export default function PixelArtEditor() {
     const scale = 20 // Scale up for export
     canvas.width = gridSize * scale
     canvas.height = gridSize * scale
-    const ctx = canvas.getContext("2d")
+    const ctx = canvas.getContext("2d", { alpha: true })
     if (!ctx) return
 
-    // Draw checkerboard background
-    ctx.fillStyle = "#ffffff"
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // Transparent background (PNG alpha)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     // Draw layers
     layers.forEach((layer) => {
@@ -430,6 +598,7 @@ export default function PixelArtEditor() {
         })
       })
     })
+    ctx.globalAlpha = 1
 
     const link = document.createElement("a")
     link.download = "pixel-art.png"
@@ -533,13 +702,108 @@ export default function PixelArtEditor() {
         <div className="flex-1 flex flex-col bg-[#1c1e24] rounded-2xl overflow-hidden border border-white/5 shadow-xl">
           <div className="p-4 border-b border-white/5 flex items-center justify-between bg-[#22242a]">
             <span className="text-sm font-medium text-zinc-300">Layers</span>
-            <button
-              onClick={addLayer}
-              className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-zinc-400 hover:text-white"
-            >
-              <Plus size={16} />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <input
+                ref={referenceFileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleReferenceImagePick}
+              />
+              <button
+                type="button"
+                onClick={() => referenceFileInputRef.current?.click()}
+                className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-zinc-400 hover:text-white"
+                title="Add reference image (trace / guide)"
+              >
+                <ImagePlus size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={addLayer}
+                className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-zinc-400 hover:text-white"
+                title="Add layer"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
           </div>
+
+          {referenceImageUrl && (
+            <div className="shrink-0 border-b border-white/5 bg-[#22242a]/60 px-3 py-2">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Reference
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setReferenceVisible((v) => !v)}
+                  className={cn(
+                    "p-1 rounded-md transition-colors",
+                    referenceVisible ? "text-zinc-400 hover:text-white" : "text-zinc-600",
+                  )}
+                  title={referenceVisible ? "Hide reference on canvas" : "Show reference on canvas"}
+                >
+                  {referenceVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                <button
+                  type="button"
+                  disabled={!referenceVisible}
+                  onClick={() => setReferenceAdjustMode((m) => !m)}
+                  className={cn(
+                    "flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors",
+                    referenceAdjustMode
+                      ? "bg-orange-500/25 text-orange-400"
+                      : "bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200",
+                    !referenceVisible && "opacity-40 pointer-events-none",
+                  )}
+                  title="Drag on canvas to move reference"
+                >
+                  <Move size={12} />
+                  {referenceAdjustMode ? "Done moving" : "Move position"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReferenceOffset({ x: 0, y: 0 })}
+                  className="rounded-md px-2 py-1 text-[10px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                >
+                  Reset position
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <img
+                  src={referenceImageUrl}
+                  alt=""
+                  className="h-12 w-12 rounded-lg object-cover border border-white/10 shrink-0"
+                />
+                <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] text-zinc-500 w-7 shrink-0">Opac</span>
+                    <input
+                      type="range"
+                      min="5"
+                      max="100"
+                      value={referenceOpacity}
+                      onChange={(e) => setReferenceOpacity(Number.parseInt(e.target.value, 10))}
+                      className="flex-1 min-w-0 h-1 bg-zinc-700 rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500"
+                    />
+                    <span className="text-[9px] text-zinc-500 w-7 text-right shrink-0">
+                      {referenceOpacity}%
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearReferenceImage}
+                    className="text-left text-[10px] text-red-400/90 hover:text-red-300"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {layers
@@ -553,20 +817,14 @@ export default function PixelArtEditor() {
                 return (
                 <div
                   key={layer.id}
+                  data-layer-card
                   onClick={() => !isEditing && setActiveLayerId(layer.id)}
                   className={cn(
                     "group flex flex-col gap-2 p-3 rounded-xl cursor-pointer transition-all border border-transparent",
                     activeLayerId === layer.id ? "bg-[#2a2d36] border-white/5 shadow-lg" : "hover:bg-white/5",
-                    draggingLayerId === layer.id && "opacity-60",
+                    draggingLayerId === layer.id && "opacity-40",
                     dragOverLayerId === layer.id && draggingLayerId !== layer.id && "border-orange-500/40 bg-orange-500/5",
                   )}
-                  draggable={!isEditing}
-                  onDragStart={(e) => {
-                    if (isEditing) return
-                    setDraggingLayerId(layer.id)
-                    e.dataTransfer.effectAllowed = "move"
-                    e.dataTransfer.setData("text/plain", layer.id)
-                  }}
                   onDragOver={(e) => {
                     if (!draggingLayerId || draggingLayerId === layer.id) return
                     e.preventDefault()
@@ -583,13 +841,61 @@ export default function PixelArtEditor() {
                     setDraggingLayerId(null)
                     setDragOverLayerId(null)
                   }}
-                  onDragEnd={() => {
-                    setDraggingLayerId(null)
-                    setDragOverLayerId(null)
-                  }}
                 >
                   <div className="flex items-center justify-between gap-1">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {layers.length > 1 && (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          draggable={!isEditing}
+                          onDragStart={(e) => {
+                            if (isEditing) {
+                              e.preventDefault()
+                              return
+                            }
+                            const card = (e.currentTarget as HTMLElement).closest("[data-layer-card]")
+                            if (!card) return
+                            clearLayerDragPreview()
+                            const rect = card.getBoundingClientRect()
+                            const clone = card.cloneNode(true) as HTMLElement
+                            clone.querySelectorAll("input").forEach((el) => el.remove())
+                            clone.removeAttribute("data-layer-card")
+                            Object.assign(clone.style, {
+                              position: "fixed",
+                              left: "-10000px",
+                              top: "-10000px",
+                              width: `${rect.width}px`,
+                              pointerEvents: "none",
+                              opacity: "0.97",
+                              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.65)",
+                              transform: "rotate(-0.5deg)",
+                              borderRadius: "12px",
+                              overflow: "hidden",
+                            })
+                            document.body.appendChild(clone)
+                            layerDragPreviewRef.current = clone
+                            void clone.offsetWidth
+                            const ox = Math.round(e.clientX - rect.left)
+                            const oy = Math.round(e.clientY - rect.top)
+                            e.dataTransfer.setDragImage(clone, ox, oy)
+                            setDraggingLayerId(layer.id)
+                            e.dataTransfer.effectAllowed = "move"
+                            e.dataTransfer.setData("text/plain", layer.id)
+                          }}
+                          onDragEnd={() => {
+                            clearLayerDragPreview()
+                            setDraggingLayerId(null)
+                            setDragOverLayerId(null)
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          className="shrink-0 p-0.5 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-white/5 opacity-70 group-hover:opacity-100"
+                          title="Drag to reorder layer"
+                        >
+                          <GripVertical size={14} />
+                        </div>
+                      )}
                       {layers.length > 1 && (
                         <div className="flex flex-col shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
@@ -855,6 +1161,29 @@ export default function PixelArtEditor() {
                 }}
               />
 
+              {referenceImageUrl && referenceVisible && (
+                <img
+                  src={referenceImageUrl}
+                  alt=""
+                  draggable={false}
+                  className="absolute inset-0 z-[5] h-full w-full select-none rounded-sm object-contain pointer-events-none"
+                  style={{
+                    opacity: referenceOpacity / 100,
+                    transform: `translate(${referenceOffset.x}px, ${referenceOffset.y}px)`,
+                  }}
+                />
+              )}
+
+              {referenceImageUrl && referenceVisible && referenceAdjustMode && (
+                <div
+                  className="absolute inset-0 z-[12] touch-none rounded-sm cursor-grab bg-orange-500/[0.07] ring-2 ring-inset ring-orange-500/35 active:cursor-grabbing"
+                  onPointerDown={handleReferenceMovePointerDown}
+                  onPointerMove={handleReferenceMovePointerMove}
+                  onPointerUp={handleReferenceMovePointerUp}
+                  onPointerCancel={handleReferenceMovePointerUp}
+                />
+              )}
+
               <canvas
                 ref={canvasRef}
                 width={gridSize * 20} // Internal resolution
@@ -862,6 +1191,7 @@ export default function PixelArtEditor() {
                 className={cn(
                   "absolute inset-0 w-full h-full z-10 touch-none image-pixelated rounded-sm border border-white/10",
                   tool === "hand" ? "cursor-grab" : "cursor-crosshair",
+                  referenceAdjustMode && "pointer-events-none",
                 )}
                 onMouseDown={handlePointerDown}
                 onMouseMove={handlePointerMove}
@@ -1037,7 +1367,8 @@ export default function PixelArtEditor() {
                     {tool === "pencil" && "Click and drag to draw pixels"}
                     {tool === "eraser" && "Click and drag to remove pixels"}
                     {tool === "bucket" && "Fill connected area with color"}
-                    {tool === "picker" && "Pick color from canvas"}
+                    {tool === "picker" &&
+                      "Pick from layers, or from reference image on empty pixels"}
                     {tool === "hand" && "Click and drag to pan the canvas"}
                   </div>
                 </div>
